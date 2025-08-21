@@ -1,0 +1,386 @@
+:root { 
+  --bg:#0b0f15; 
+  --card:#121826; 
+  --border:#1f2a3b; 
+  --text:#e6eef7; 
+  --muted:#9db0c9; 
+  --ok:#93e18e; 
+  --err:#ff8a8a; 
+  --btn:#1a6cff; 
+  --input:#0f1522; 
+}
+
+html, body { 
+  background: var(--bg); 
+  color: var(--text); 
+  font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; 
+}
+
+.dgf-card { 
+  max-width: 760px; 
+  width: 100%;                 /* ocupa toda a largura disponível do painel */
+  box-sizing: border-box;      /* padding conta dentro da largura */
+  padding: 16px; 
+  border-radius: 14px; 
+  background: var(--card); 
+  box-shadow: 0 8px 24px rgba(0,0,0,.35); 
+  border: 1px solid var(--border); 
+}
+
+.dgf-title { 
+  font-size: 18px; 
+  margin: 0 0 12px; 
+  font-weight: 600; 
+}
+
+/* ---- Agora em coluna (label em cima, campo embaixo) ---- */
+.dgf-row { 
+  display: flex; 
+  flex-direction: column; 
+  align-items: flex-start; 
+  gap: 6px; 
+  margin-top: 10px; 
+}
+
+.dgf-label { 
+  font-size: 13px; 
+  color: var(--muted); 
+}
+
+/* Campos menores (70% da largura do card) */
+.dgf-select, 
+.dgf-input { 
+  width: 70%; 
+  max-width: 520px;       /* opcional: limita no desktop */
+  padding: 10px 12px; 
+  border-radius: 10px; 
+  border: 1px solid #2b3a52; 
+  background: var(--input); 
+  color: var(--text); 
+  outline: none; 
+}
+
+/* Responsivo: em telas muito estreitas ocupa 100% */
+@media (max-width: 520px) {
+  .dgf-select, 
+  .dgf-input { width: 100%; max-width: 100%; }
+}
+
+.dgf-btns { 
+  display: flex; 
+  gap: 8px; 
+  margin-top: 14px; 
+  flex-wrap: wrap; 
+}
+
+.dgf-btn { 
+  border: 0; 
+  border-radius: 10px; 
+  padding: 10px 14px; 
+  cursor: pointer; 
+  font-weight: 600; 
+  background: var(--btn); 
+  color: white; 
+}
+
+.dgf-btn--ghost { 
+  background: #2b3a52; 
+}
+
+.dgf-btn:disabled { 
+  opacity: .6; 
+  cursor: not-allowed; 
+}
+
+.dgf-status { 
+  margin-top: 10px; 
+  font-size: 14px; 
+  min-height: 18px; 
+}
+
+.dgf-status.ok { color: var(--ok); }
+.dgf-status.err { color: var(--err); }
+
+.dgf-muted { 
+  color: var(--muted); 
+  font-size: 12px; 
+  margin-top: 6px; 
+}
+
+/* Bloco de detalhes abaixo do card */
+/* Bloco de detalhes abaixo do card */
+.dgf-details {
+  margin-top: 12px;
+  padding: 10px;
+  border-radius: 8px;
+  background: #0f1522;
+  font-size: 12px;
+  color: #e6eef7;
+  /* white-space: pre-line;  <-- REMOVA ou comente */
+  white-space: normal;          /* deixa o navegador quebrar linha normalmente */
+  max-width: 100%;              /* segue a largura do card */
+  width: 100%;
+  box-sizing: border-box;       /* evita ultrapassar a largura por causa do padding */
+  border: 1px solid var(--border);
+  overflow-x: hidden;           /* evita barra horizontal */
+}
+
+/* Força quebra de palavras/URLs muito longos */
+.dgf-details span {
+  display: block;
+  margin-bottom: 4px;
+  overflow-wrap: anywhere;      /* quebra em qualquer ponto se necessário */
+  word-break: break-word;       /* compat extra */
+}
+
+.dgf-details b { 
+  color: #9db0c9; 
+  margin-right: 4px; 
+}
+
+<div class="dgf-card">
+  <h1 class="dgf-title">Controle de Câmera</h1>
+
+  <div class="dgf-row">
+    <label for="cameraSelect" class="dgf-label">Câmera</label>
+    <select id="cameraSelect" class="dgf-select">
+      <option value="">Carregando...</option>
+    </select>
+  </div>
+
+  <div class="dgf-row">
+    <label for="filterInput" class="dgf-label">Filtro (opcional)</label>
+    <input id="filterInput" class="dgf-input" type="text" placeholder="Ex.: ACIC, Portaria..." />
+  </div>
+
+  <div class="dgf-btns">
+    <!-- Recarregar virou Start -->
+    <button id="btnStart" class="dgf-btn dgf-btn--ghost" title="Iniciar câmera selecionada">Start</button>
+    <button id="btnStop" class="dgf-btn dgf-btn--ghost" title="Parar câmera selecionada">Stop</button>
+  </div>
+
+  <div id="status" class="dgf-status"></div>
+  <div class="dgf-muted">Dica: use o filtro para reduzir a lista rapidamente.</div>
+  <div id="cameraDetails" class="dgf-details"></div>
+</div>
+
+(function () {
+  // ===== CONFIG =====
+  const API_BASE = "http://10.247.179.202:9300"; // ajuste se necessário
+  const STORAGE_KEY = "dgf_camera_selected";
+
+  // ===== ELEMENTOS =====
+  const elSelect  = htmlNode.getElementById("cameraSelect");
+  const elFilter  = htmlNode.getElementById("filterInput");
+  const elStatus  = htmlNode.getElementById("status");
+  const btnStart  = htmlNode.getElementById("btnStart");
+  const btnStop   = htmlNode.getElementById("btnStop");
+  const elDetails = htmlNode.getElementById("cameraDetails"); // <-- precisa existir no HTML
+
+  // ===== ESTADO =====
+  let cameraRows = [];           // linhas extraídas da query
+  let rowByCamera = new Map();   // camera -> linha
+
+  // ===== UTILS =====
+  function setStatus(msg, type) {
+    elStatus.textContent = msg || "";
+    elStatus.className = "dgf-status" + (type ? (" " + type) : "");
+  }
+
+  function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, function (s) {
+      return ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#39;' })[s];
+    });
+  }
+
+  function safeJson(x, fallback) {
+    if (x == null) return fallback;
+    if (typeof x === "object") return x;
+    if (typeof x === "string") {
+      try { return JSON.parse(x); } catch { return fallback; }
+    }
+    return fallback;
+  }
+
+  function getSelectedCameraRow() {
+    const name = elSelect.value;
+    if (!name) return null;
+    return rowByCamera.get(name) || null;
+  }
+
+  // ===== DATA -> ROWS =====
+  function extractRowsFromSeries() {
+    // versão compatível sem optional chaining
+    const frame = (typeof data !== "undefined" && data && data.series && data.series[0]) ? data.series[0] : null;
+    if (!frame || !frame.fields || !frame.fields.length) return [];
+
+    // nome da coluna -> índice (case-insensitive)
+    const idxByName = {};
+    for (var i = 0; i < frame.fields.length; i++) {
+      var fname = String(frame.fields[i].name || "").toLowerCase();
+      idxByName[fname] = i;
+    }
+
+    // log de colunas ausentes (apenas diagnóstico)
+    var required = ["camera", "url", "task", "modelo", "categories", "rois_names", "interval", "rois"];
+    var missing = [];
+    for (var r = 0; r < required.length; r++) {
+      if (!(required[r] in idxByName)) missing.push(required[r]);
+    }
+    if (missing.length) console.warn("[HTML Graphics] Colunas ausentes:", missing);
+
+    // tamanho = tamanho da primeira coluna encontrada
+    var firstKey = Object.keys(idxByName)[0];
+    var firstIdx = idxByName[firstKey];
+    var length = frame.fields[firstIdx].values.length;
+
+    var rows = [];
+    for (var j = 0; j < length; j++) {
+      var row = {};
+      for (var name in idxByName) {
+        var idx = idxByName[name];
+        row[name] = frame.fields[idx].values.get(j);
+      }
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  // ===== DETALHES (render abaixo do painel) =====
+  function renderDetails(row) {
+    if (!elDetails) return; // se o container não existir, apenas ignore
+    if (!row) {
+      elDetails.innerHTML = "<i>Nenhuma câmera selecionada</i>";
+      return;
+    }
+
+    // ordem e chaves exibidas
+    var fields = ["url","task","modelo","categories","rois_names","interval","rois"];
+    var parts = [];
+
+    for (var i = 0; i < fields.length; i++) {
+      var key = fields[i];
+      var val = row[key];
+
+      // normaliza objetos para string
+      if (typeof val === "object") {
+        try { val = JSON.stringify(val); } catch(e) {}
+      }
+
+      parts.push('<span><b>' + escapeHtml(key) + ':</b> ' + escapeHtml(val == null ? "" : String(val)) + "</span>");
+    }
+
+    elDetails.innerHTML = parts.join("");
+  }
+
+  // ===== RENDER =====
+  function renderOptions() {
+    var filter = (elFilter.value || "").toLowerCase();
+    rowByCamera.clear();
+
+    var options = [];
+    var seen = new Set();
+
+    for (var i = 0; i < cameraRows.length; i++) {
+      var r = cameraRows[i];
+      var camera = (r.camera != null) ? r.camera : r["camera"];
+      if (!camera) continue;
+      if (filter && String(camera).toLowerCase().indexOf(filter) === -1) continue;
+      if (seen.has(camera)) continue;
+
+      seen.add(camera);
+      rowByCamera.set(camera, r);
+      options.push(
+        '<option value="' + escapeHtml(String(camera)) + '">' + escapeHtml(String(camera)) + '</option>'
+      );
+    }
+
+    elSelect.innerHTML = options.length ? options.join("") : '<option value="">Sem dados</option>';
+
+    // restaurar seleção anterior se existir
+    var saved = null;
+    try { saved = localStorage.getItem(STORAGE_KEY); } catch(e) {}
+    if (saved && rowByCamera.has(saved)) {
+      elSelect.value = saved;
+    } else if (options.length) {
+      try { localStorage.setItem(STORAGE_KEY, elSelect.value); } catch(e) {}
+    }
+
+    // renderiza detalhes da seleção atual
+    renderDetails(getSelectedCameraRow());
+
+    setStatus(options.length ? ("Encontradas " + options.length + " câmeras.") : "Nenhuma câmera encontrada.");
+  }
+
+  // ===== AÇÕES =====
+  async function reload() {
+    setStatus("Atualizando lista de câmeras...");
+    cameraRows = extractRowsFromSeries();
+    renderOptions();
+  }
+
+  async function startSelected() {
+    var row = getSelectedCameraRow();
+    if (!row) { setStatus("Selecione uma câmera.", "err"); return; }
+
+    var payload = {
+      camera_name: (row.camera != null ? row.camera : row["camera"]),
+      rtsp_url: row.url || "",
+      rois: safeJson(row.rois, []),
+      inputs_category: safeJson(row.categories, [1000]),
+      rois_names: (row.task === "Classify") ? String(row.camera != null ? row.camera : row["camera"]) : safeJson(row.rois_names, []),
+      interval: Number((row.interval != null ? row.interval : 1)),
+      model: (row.modelo != null ? row.modelo : (row.model != null ? row.model : "model")),
+      task: row.task || "task",
+      conf_list: []
+    };
+
+    try {
+      setStatus("Iniciando câmera...");
+      const res = await fetch(API_BASE + "/start_camera/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const text = await res.text();
+      if (!res.ok) throw new Error(text || ("HTTP " + res.status));
+      setStatus("Start OK: " + text, "ok");
+    } catch (e) {
+      console.error(e);
+      setStatus("Falha no Start: " + e.message, "err");
+    }
+  }
+
+  async function stopSelected() {
+    var row = getSelectedCameraRow();
+    if (!row) { setStatus("Selecione uma câmera.", "err"); return; }
+
+    try {
+      setStatus("Parando câmera...");
+      const res = await fetch(API_BASE + "/stop_camera/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ camera_name: (row.camera != null ? row.camera : row["camera"]) })
+      });
+      const text = await res.text();
+      if (!res.ok) throw new Error(text || ("HTTP " + res.status));
+      setStatus("Stop OK: " + text, "ok");
+    } catch (e) {
+      console.error(e);
+      setStatus("Falha no Stop: " + e.message, "err");
+    }
+  }
+
+  // ===== EVENTOS =====
+  btnStart .addEventListener("click", startSelected);
+  btnStop  .addEventListener("click", stopSelected);
+  elFilter.addEventListener("input", renderOptions);
+  elSelect.addEventListener("change", function () {
+    try { localStorage.setItem(STORAGE_KEY, elSelect.value || ""); } catch(e) {}
+    renderDetails(getSelectedCameraRow());
+  });
+
+  // ===== BOOT =====
+  cameraRows = extractRowsFromSeries();
+  renderOptions();
+})();

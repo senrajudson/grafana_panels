@@ -1,0 +1,127 @@
+<div id="container"></div>
+
+const series = htmlGraphics.data.series[0];
+
+// Verificação inicial se há dados
+if (!series || !series.fields || !series.fields.length || !series.fields[0].values.length) {
+  htmlGraphics.htmlNode.querySelector("#container").innerHTML = "<p style='color:red'>Nenhum dado encontrado para os filtros aplicados.</p>";
+  return;
+}
+
+const fields = series.fields;
+const rowCount = fields[0].values.length;
+
+// Função para localizar o índice da coluna
+const idx = name => fields.findIndex(f => f.name === name);
+
+// Índices dos campos
+const ci = idx("inicio");
+const cf = idx("fim");
+const ca = idx("area");
+const ce = idx("evento");
+const cd = idx("duracao");
+
+// Validação: garantir que todas as colunas existem e têm dados
+const requiredFields = { inicio: ci, fim: cf, area: ca, evento: ce, duracao: cd };
+for (const [key, index] of Object.entries(requiredFields)) {
+  if (index === -1 || !fields[index]?.values?.length) {
+    htmlGraphics.htmlNode.querySelector("#container").innerHTML =
+      `<p style='color:red'>Erro: Campo <strong>${key}</strong> não encontrado ou sem dados.</p>`;
+    return;
+  }
+}
+
+const cameraVar = htmlGraphics.getTemplateSrv().replace("${Cameras}");
+const rowsPerPage = 15;
+let currentPage = 1;
+
+function renderTablePage(page) {
+  const start = (page - 1) * rowsPerPage;
+  const end = Math.min(start + rowsPerPage, rowCount);
+
+  let html = `<table border="1" style="width:100%;border-collapse:collapse">
+    <thead>
+      <tr>
+        <th>Início</th>
+        <th>Fim</th>
+        <th>Área</th>
+        <th>Evento</th>
+        <th>Duração</th>
+        <th>Vídeo</th>
+      </tr>
+    </thead>
+    <tbody>`;
+
+  for (let i = start; i < end; i++) {
+    const inicioMs = Number(fields[ci].values[i]);
+    const fimMs    = Number(fields[cf].values[i]);
+    const inicioDate = new Date(inicioMs).toLocaleString('pt-BR', { timeZone: 'UTC' });
+    const fimDate    = new Date(fimMs).toLocaleString('pt-BR', { timeZone: 'UTC' });
+    const area = fields[ca].values[i];
+    const evento = fields[ce].values[i];
+    const duracao = fields[cd].values[i];
+    const url = `http://10.247.179.202:8210/api/abrir_video?camera=${encodeURIComponent(cameraVar)}&inicio=${inicioMs}&fim=${fimMs}`;
+
+    html += `<tr>
+      <td>${inicioDate}</td>
+      <td>${fimDate}</td>
+      <td>${area}</td>
+      <td>${evento}</td>
+      <td>${duracao}</td>
+      <td><a href="${url}" target="_blank">Ver vídeo</a></td>
+    </tr>`;
+  }
+
+  html += `</tbody></table>`;
+
+  // Paginação
+  const totalPages = Math.ceil(rowCount / rowsPerPage);
+  html += `<div style="margin-top:10px;text-align:center">`;
+  if (page > 1) {
+    html += `<button onclick="goToPage(${page - 1})">⬅ Anterior</button>`;
+  }
+  html += ` Página ${page} de ${totalPages} `;
+  if (page < totalPages) {
+    html += `<button onclick="goToPage(${page + 1})">Próxima ➡</button>`;
+  }
+
+  // Botão de download
+  html += `<br><button onclick="downloadCSV()" style="margin-top:10px">📥 Baixar CSV Completo</button>`;
+  html += `</div>`;
+
+  htmlGraphics.htmlNode.querySelector("#container").innerHTML = html;
+}
+
+// Navegação entre páginas
+window.goToPage = function(page) {
+  currentPage = page;
+  renderTablePage(page);
+};
+
+// Download do CSV
+window.downloadCSV = function () {
+  let csv = "Início;Fim;Área;Evento;Duração\n";
+
+  for (let i = 0; i < rowCount; i++) {
+    const inicioMs = Number(fields[ci].values[i]);
+    const fimMs    = Number(fields[cf].values[i]);
+    const inicioDate = new Date(inicioMs).toLocaleString('pt-BR', { timeZone: 'UTC' });
+    const fimDate    = new Date(fimMs).toLocaleString('pt-BR', { timeZone: 'UTC' });
+    const area = fields[ca].values[i];
+    const evento = fields[ce].values[i];
+    const duracao = fields[cd].values[i];
+
+    csv += `"${inicioDate}";"${fimDate}";"${area}";"${evento}";"${duracao}"\n`;
+  }
+
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `eventos_${cameraVar}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
+// Renderiza a página inicial
+renderTablePage(currentPage);

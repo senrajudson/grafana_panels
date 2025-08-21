@@ -1,0 +1,536 @@
+.roi-tool {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji", sans-serif;
+}
+
+.field label {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+#cameraSelect,
+#roisNamesInput {
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid #555;
+  background: transparent;
+  color: inherit;
+}
+
+#namesHint {
+  display: inline-block;
+  margin-top: 6px;
+  opacity: 0.8;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#btnGetFrame {
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid #666;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+#btnGetFrame:hover {
+  filter: brightness(1.05);
+}
+
+#status {
+  opacity: 0.85;
+}
+
+#roiCanvas {
+  max-width: 100%;
+  border: 1px solid #444;
+  border-radius: 8px;
+  display: block;
+}
+
+
+<div class="roi-tool">
+  <!-- 1) Dropdown de câmeras -->
+  <div class="field">
+    <label for="cameraSelect">Câmera</label>
+    <select id="cameraSelect"></select>
+  </div>
+
+  <!-- 2) Input para rois_names -->
+  <div class="field">
+    <label for="roisNamesInput">ROIs Names (separe por vírgula)</label>
+    <input id="roisNamesInput" type="text" placeholder="AC1, AC2, FEAS, CARROTP" />
+    <small id="namesHint">Dica: a contagem deve bater com a quantidade de ROIs desenhadas.</small>
+  </div>
+
+  <!-- 3) Botão para pegar frame -->
+  <div class="actions">
+    <button id="btnGetFrame">Pegar frame</button>
+    <span id="status"></span>
+  </div>
+
+  <!-- 4) Canvas com as ROIs -->
+  <canvas id="roiCanvas"></canvas>
+</div>
+
+
+// ================== CONFIG ==================
+const API_BASE = "http://10.247.179.202:9300"; // sua API
+const root = htmlNode; // raiz do HTML Graphics
+
+// ================== ELEMENTOS ==================
+const cameraSelect   = root.querySelector('#cameraSelect');
+const roisNamesInput = root.querySelector('#roisNamesInput');
+const btnGetFrame    = root.querySelector('#btnGetFrame');
+const statusEl       = root.querySelector('#status');
+const namesHint      = root.querySelector('#namesHint');
+const canvas         = root.querySelector('#roiCanvas');
+const ctx            = canvas.getContext('2d');
+
+// ================== ESTADO ==================
+let img = new Image();
+let imgNaturalWidth = 0, imgNaturalHeight = 0;
+let rois = [];                  // [{x,y,w,h}]
+let cameraMap = {};            // { camera: url } vindo da query (não usado para frame)
+let drawing = false;
+let startX = 0, startY = 0;
+let hoverIndex = -1;
+let dragIndex = -1;
+let dragOffset = { dx: 0, dy: 0 };
+const HANDLE = 8;
+const MIN_SIZE = 5;
+
+// ================== HELPERS (HTML Graphics data) ==================
+function vecLen(vec) {
+  if (!vec) return 0;
+  if (typeof vec.length === 'number') return vec.length;
+  if (typeof vec.toArray === 'function') return vec.toArray().length;
+  return 0;
+}
+function vecGet(vec, i) {
+  if (!vec) return undefined;
+  if (typeof vec.get === 'function') return vec.get(i);
+  return vec[i];
+}
+function findField(frame, name) {
+  if (!frame || !frame.fields) return null;
+  const lower = name.toLowerCase();
+  return frame.fields.find(f => (f.name || '').toLowerCase() === lower) || null;
+}
+
+// ================== UTILS ==================
+function setStatus(msg) { statusEl.textContent = msg || ""; }
+
+// gera epoch ms (UTC) para ontem às 12:00 no fuso local do navegador
+function yesterdayNoonUtcMs() {
+  const now = new Date();
+  const local = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 12, 0, 0, 0);
+  return local.getTime();
+}
+
+function imgToCanvasScale() {
+  return {
+    sx: canvas.width / (imgNaturalWidth || 1),
+    sy: canvas.height / (imgNaturalHeight || 1)
+  };
+}
+function toCanvasCoords(x, y) {
+  const { sx, sy } = imgToCanvasScale();
+  return { cx: Math.round(x * sx), cy: Math.round(y * sy) };
+}
+function toImageCoords(cx, cy) {
+  const { sx, sy } = imgToCanvasScale();
+  return { x: Math.round(cx / sx), y: Math.round(cy / sy) };
+}
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+// Normaliza ROIs vindas da API
+function normalizeRois(roisField) {
+  if (!roisField) return [];
+  if (Array.isArray(roisField) && roisField.length === 0) return [];
+
+  // lista de dicts {x,y,w,h}
+  if (Array.isArray(roisField) && typeof roisField[0] === 'object' && !Array.isArray(roisField[0])) {
+    return roisField.map(r => ({
+      x: Number(r.x), y: Number(r.y), w: Number(r.w), h: Number(r.h)
+    }));
+  }
+  // lista de listas [x1,y1,x2,y2]
+  if (Array.isArray(roisField) && Array.isArray(roisField[0])) {
+    return roisField.map(a => {
+      const [x1, y1, x2, y2] = a.map(Number);
+      return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+    });
+  }
+  return [];
+}
+
+// ================== DROPDOWN (query do painel) ==================
+function populateCameraSelect() {
+  cameraSelect.innerHTML = "";
+  cameraMap = {};
+
+  const grafData = (typeof data !== 'undefined') ? data : (window && window.data);
+  if (!grafData || !Array.isArray(grafData.series) || grafData.series.length === 0) {
+    setStatus("Sem dados: verifique se a query retorna as colunas 'camera' e 'url'.");
+    console.warn("data.series vazio/indefinido", grafData);
+    return;
+  }
+
+  const frame = grafData.series[0]; // usamos a primeira série
+  const camField = findField(frame, 'camera');
+  const urlField = findField(frame, 'url');
+
+  if (!camField) {
+    setStatus("Campo 'camera' não encontrado na série.");
+    console.warn("Campos disponíveis:", frame?.fields?.map(f => f.name));
+    return;
+  }
+
+  const n = vecLen(camField.values);
+  for (let i = 0; i < n; i++) {
+    const cam = vecGet(camField.values, i);
+    const url = urlField ? vecGet(urlField.values, i) : undefined;
+    if (cam == null || cam === '') continue;
+
+    const opt = document.createElement('option');
+    opt.value = String(cam);
+    opt.textContent = String(cam);
+    cameraSelect.appendChild(opt);
+
+    if (url != null && url !== '') {
+      cameraMap[String(cam)] = String(url); // mapeia camera -> url (não usamos p/ frame)
+    }
+  }
+
+  if (cameraSelect.options.length === 0) {
+    setStatus("Query retornou, mas não há valores em 'camera'.");
+  } else {
+    cameraSelect.selectedIndex = 0;
+    setStatus(`Câmeras carregadas (${cameraSelect.options.length}).`);
+  }
+}
+
+// ================== DESENHO ==================
+function drawAll() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (img && imgNaturalWidth > 0) ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+  ctx.lineWidth = 2;
+  rois.forEach((r, i) => {
+    const p = toCanvasCoords(r.x, r.y);
+    const q = toCanvasCoords(r.x + r.w, r.y + r.h);
+    const w = q.cx - p.cx;
+    const h = q.cy - p.cy;
+
+    ctx.strokeStyle = (i === hoverIndex) ? '#00e676' : '#4fc3f7';
+    ctx.strokeRect(p.cx, p.cy, w, h);
+
+    ctx.fillStyle = (i === hoverIndex) ? '#00e676' : '#4fc3f7';
+    [[p.cx, p.cy], [p.cx + w, p.cy], [p.cx, p.cy + h], [p.cx + w, p.cy + h]].forEach(([hx, hy]) => {
+      ctx.fillRect(hx - HANDLE / 2, hy - HANDLE / 2, HANDLE, HANDLE);
+    });
+
+    const names = parseNamesInput();
+    const label = (names[i] || `ROI ${i + 1}`) + ` (${r.w}x${r.h})`;
+    ctx.font = '14px sans-serif';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(label, p.cx + 6, (p.cy - 6 < 12) ? p.cy + 14 : p.cy - 6);
+  });
+
+  // dica nomes x quantidade
+  const names = parseNamesInput();
+  namesHint.style.color = (names.length && names.length !== rois.length) ? '#ff6e6e' : '';
+  namesHint.textContent = `Dica: ${rois.length} ROI(s) desenhadas — nomes: ${names.length}`;
+}
+
+function hitTestIndex(cx, cy) {
+  for (let i = rois.length - 1; i >= 0; i--) {
+    const p = toCanvasCoords(rois[i].x, rois[i].y);
+    const q = toCanvasCoords(rois[i].x + rois[i].w, rois[i].y + rois[i].h); // <— fix aqui
+    if (cx >= p.cx && cx <= q.cx && cy >= p.cy && cy <= q.cy) return i;
+  }
+  return -1;
+}
+
+// ================== MOUSE EVENTS ==================
+canvas.addEventListener('mousemove', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const cx = e.clientX - rect.left;
+  const cy = e.clientY - rect.top;
+
+  if (drawing) {
+    drawAll();
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = '#ffb300';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(startX, startY, cx - startX, cy - startY);
+    ctx.setLineDash([]);
+    return;
+  }
+
+  if (dragIndex >= 0) {
+    const { x, y } = toImageCoords(cx - dragOffset.dx, cy - dragOffset.dy);
+    const r = rois[dragIndex];
+    r.x = clamp(x, 0, imgNaturalWidth - r.w);
+    r.y = clamp(y, 0, imgNaturalHeight - r.h);
+    drawAll();
+    return;
+  }
+
+  hoverIndex = hitTestIndex(cx, cy);
+  canvas.style.cursor = (hoverIndex >= 0) ? 'move' : 'crosshair';
+  drawAll();
+});
+
+canvas.addEventListener('mousedown', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const cx = e.clientX - rect.left;
+  const cy = e.clientY - rect.top;
+
+  const idx = hitTestIndex(cx, cy);
+  if (idx >= 0) {
+    dragIndex = idx;
+    const r = rois[idx];
+    const p = toCanvasCoords(r.x, r.y);
+    dragOffset.dx = cx - p.cx;
+    dragOffset.dy = cy - p.cy;
+    return;
+  }
+
+  drawing = true;
+  startX = cx;
+  startY = cy;
+});
+
+window.addEventListener('mouseup', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const cx = e.clientX - rect.left;
+  const cy = e.clientY - rect.top;
+
+  if (dragIndex >= 0) { dragIndex = -1; return; }
+  if (!drawing) return;
+  drawing = false;
+
+  let x1 = Math.min(startX, cx);
+  let y1 = Math.min(startY, cy);
+  let w  = Math.abs(cx - startX);
+  let h  = Math.abs(cy - startY);
+  if (w < MIN_SIZE || h < MIN_SIZE) { drawAll(); return; }
+
+  const p1 = toImageCoords(x1, y1);
+  const p2 = toImageCoords(x1 + w, y1 + h);
+  rois.push({ x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y });
+  drawAll();
+});
+
+// ================== INPUT ROIS NAMES ==================
+function parseNamesInput() {
+  return roisNamesInput.value
+    .split(',')
+    .map(s => s.trim())
+    .filter(s => s.length > 0);
+}
+roisNamesInput.addEventListener('input', () => drawAll());
+
+// ================== CAPTURAR PRIMEIRO FRAME DO PLAYBACK ==================
+function loadFirstFrameFromPlayback(url, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    const imgEl = new Image();
+    imgEl.crossOrigin = 'anonymous';
+
+    let done = false;
+    const deadline = setTimeout(() => {
+      if (done) return;
+      done = true;
+      imgEl.src = '';
+      reject(new Error('Timeout ao carregar primeiro frame'));
+    }, timeoutMs);
+
+    const checkDims = () => {
+      if (done) return;
+      if (imgEl.naturalWidth > 0 && imgEl.naturalHeight > 0) {
+        done = true;
+        clearTimeout(deadline);
+        const w = imgEl.naturalWidth;
+        const h = imgEl.naturalHeight;
+        const off = document.createElement('canvas');
+        off.width = w;
+        off.height = h;
+        const offctx = off.getContext('2d');
+        try { offctx.drawImage(imgEl, 0, 0); } catch (_) {}
+        const frozen = new Image();
+        frozen.crossOrigin = 'anonymous';
+        frozen.onload = () => {
+          imgEl.src = '';
+          resolve(frozen);
+        };
+        frozen.onerror = () => {
+          imgEl.src = '';
+          resolve(imgEl);
+        };
+        try {
+          frozen.src = off.toDataURL('image/jpeg');
+        } catch (e) {
+          imgEl.src = '';
+          resolve(imgEl);
+        }
+        return;
+      }
+      setTimeout(checkDims, 100);
+    };
+
+    imgEl.src = url;
+    checkDims();
+  });
+}
+
+// ================== CARREGAR FRAME + CONFIG ==================
+async function loadFrameAndConfig() {
+  const camera = cameraSelect.value;
+  if (!camera) { setStatus('Selecione uma câmera.'); return; }
+
+  setStatus('Carregando frame e ROIs…');
+
+  // ontem ao meio-dia
+  const ts = yesterdayNoonUtcMs();
+  const playUrl = `${API_BASE}/api/abrir_video?camera=${encodeURIComponent(camera)}&inicio=${ts}&fim=${ts}`;
+
+  // 1) Captura do primeiro frame do playback
+  let firstFrame;
+  try {
+    firstFrame = await loadFirstFrameFromPlayback(playUrl, 6000);
+  } catch (err) {
+    console.error(err);
+    setStatus('Falha ao capturar frame do playback.');
+    return;
+  }
+
+  img = firstFrame;
+  imgNaturalWidth = img.naturalWidth;
+  imgNaturalHeight = img.naturalHeight;
+
+  // ajusta canvas ao espaço disponível
+  const maxW = canvas.parentElement.clientWidth;
+  const ratio = imgNaturalWidth / imgNaturalHeight;
+  const targetW = Math.min(maxW, imgNaturalWidth);
+  const targetH = Math.round(targetW / ratio);
+  canvas.width = targetW;
+  canvas.height = targetH;
+
+  // 2) config/rois pela API
+  try {
+    const r = await fetch(`${API_BASE}/cameras/${encodeURIComponent(camera)}`);
+    if (r.ok) {
+      const data = await r.json();
+      rois = normalizeRois(data.rois);
+      if (Array.isArray(data.rois_names)) {
+        roisNamesInput.value = data.rois_names.join(', ');
+      }
+    } else {
+      rois = [];
+      setStatus(`Frame ok. Config não retornou 200 (${r.status}).`);
+    }
+  } catch (err) {
+    rois = [];
+    setStatus('Frame ok. Erro ao carregar config.');
+  }
+
+  drawAll();
+  setStatus('Pronto.');
+}
+
+// ================== SALVAR ROIs (POST /rois) ==================
+function roisToXYXY() {
+  // Converte {x,y,w,h} -> [x1,y1,x2,y2] (inteiros)
+  return rois.map(r => [
+    Math.round(r.x),
+    Math.round(r.y),
+    Math.round(r.x + r.w),
+    Math.round(r.y + r.h),
+  ]);
+}
+
+async function saveRois() {
+  const camera = cameraSelect.value || "";
+  const names = parseNamesInput();
+  const xyxy = roisToXYXY();
+
+  // validações locais antes de enviar
+  if (!camera) { setStatus("Selecione uma câmera para salvar."); return; }
+  if (!xyxy.length) { setStatus("Desenhe ao menos uma ROI antes de salvar."); return; }
+  if (names.length !== xyxy.length) {
+    setStatus(`Nomes (${names.length}) e ROIs (${xyxy.length}) precisam ter o MESMO tamanho.`);
+    return;
+  }
+  if (xyxy.some(a => a.length !== 4 || a.some(n => !Number.isFinite(n)))) {
+    setStatus("ROIs inválidas: verifique se todos os números são válidos.");
+    return;
+  }
+
+  const payload = { camera, rois_names: names, rois: xyxy };
+  console.log("POST /rois payload:", payload);
+
+  const btn = root.querySelector('#btnSaveRois');
+  try {
+    if (btn) { btn.disabled = true; btn.textContent = "Salvando…"; }
+    setStatus("Salvando ROIs…");
+
+    const res = await fetch(`${API_BASE}/rois`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    const text = await res.text();
+    let body; try { body = JSON.parse(text); } catch { body = text; }
+
+    if (!res.ok) {
+      setStatus(`Erro ao salvar (${res.status}): ${typeof body === 'string' ? body : JSON.stringify(body)}`);
+    } else {
+      setStatus("ROIs salvas com sucesso!");
+      try { localStorage.setItem(`rois-${camera}`, JSON.stringify(payload)); } catch (_) {}
+    }
+  } catch (err) {
+    setStatus(`Falha de rede/CORS ao salvar: ${String(err)}`);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Salvar ROIs"; }
+  }
+}
+
+// ================== CRIAR BOTÃO "Salvar ROIs" DINAMICAMENTE ==================
+function ensureSaveButton() {
+  if (root.querySelector('#btnSaveRois')) return;
+
+  const btn = document.createElement('button');
+  btn.id = 'btnSaveRois';
+  btn.textContent = 'Salvar ROIs';
+  btn.style.padding = '8px 12px';
+  btn.style.borderRadius = '10px';
+  btn.style.border = '1px solid #666';
+  btn.style.background = 'transparent';
+  btn.style.color = 'inherit';
+  btn.style.cursor = 'pointer';
+  btn.style.marginTop = '8px';
+
+  canvas.insertAdjacentElement('afterend', btn);
+  btn.addEventListener('click', saveRois);
+}
+
+// ================== INIT ==================
+(function init() {
+  setStatus('Carregando lista de câmeras…');
+  populateCameraSelect();
+  ensureSaveButton();
+  setStatus('Selecione a câmera e clique "Pegar frame".');
+  btnGetFrame.addEventListener('click', loadFrameAndConfig);
+})();

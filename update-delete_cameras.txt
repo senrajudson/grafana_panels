@@ -1,0 +1,213 @@
+#cam-form input,
+#cam-form textarea,
+#cam-form button,
+#cam-form select {
+  box-sizing: border-box;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid #444;
+  background: rgba(255,255,255,0.02);
+  color: inherit;
+}
+#cam-form button {
+  cursor: pointer;
+  border: none;
+  background: #1f6feb;
+  color: white;
+  font-weight: 600;
+}
+#cam-form button[disabled] { opacity: .6; cursor: progress; }
+#cam-form label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+
+<div id="cam-form" class="p-3" style="font-family: Inter, system-ui, Arial; max-width: 860px;">
+  <h2 style="margin:0 0 12px;">Cadastrar / Atualizar Câmera</h2>
+
+  <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+    <label>Camera
+      <input id="in-camera" type="text" placeholder="Ex.: ACIC02" required style="width:100%;">
+    </label>
+
+    <label>Task
+      <input id="in-task" type="text" placeholder="Ex.: smoke_detection" style="width:100%;">
+    </label>
+
+    <label>Modelo
+      <input id="in-modelo" type="text" placeholder="Ex.: yolo11n.pt" style="width:100%;">
+    </label>
+
+    <label>Interval (segundos)
+      <input id="in-interval" type="number" min="0" step="1" value="0" style="width:100%;">
+    </label>
+
+    <label style="grid-column: 1 / -1;">URL
+      <input id="in-url" type="text" placeholder="http://servidor/camera.mjpg" style="width:100%;">
+    </label>
+
+    <label style="grid-column: 1 / -1;">Categories (uma por linha ou separadas por vírgula)
+      <textarea id="in-categories" rows="2" placeholder="5
+10
+15" style="width:100%;"></textarea>
+    </label>
+
+    <label style="grid-column: 1 / -1;">ROIs Names (uma por linha ou separadas por vírgula)
+      <textarea id="in-rois-names" rows="2" placeholder="ROI 1
+ROI 2" style="width:100%;"></textarea>
+    </label>
+
+    <label style="grid-column: 1 / -1;">ROIs (JSON por linha ou lista; ex.: [[x1,y1,x2,y2], ...])
+      <textarea id="in-rois" rows="3" placeholder='[ [100,120,200,220], [220,120,300,210] ]' style="width:100%;"></textarea>
+    </label>
+  </div>
+
+  <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
+    <button id="btn-send">Salvar</button>
+    <button id="btn-reset" type="button">Limpar</button>
+    <label style="margin-left:auto; display:flex; align-items:center; gap:6px;">
+      <input id="chk-save" type="checkbox" checked> salvar no navegador
+    </label>
+  </div>
+
+  <details id="payload-box" style="margin-top:12px;">
+    <summary>Ver payload</summary>
+    <pre id="payload" style="background:#0b0e14; color:#d6deeb; padding:10px; border-radius:6px; overflow:auto;"></pre>
+  </details>
+
+  <div id="msg" style="margin-top:10px;"></div>
+</div>
+
+// Executa apenas uma vez
+if (!htmlNode.__wired) {
+  htmlNode.__wired = true;
+
+  const API_BASE = "http://10.247.179.202:9300";
+  const ENDPOINT = "/cameras/upsert";
+
+  const $ = (sel) => htmlNode.querySelector(sel);
+
+  const parseList = (txt = "") =>
+    txt.split(/\n|,/).map(s => s.trim()).filter(Boolean);
+
+  const parseRois = (txt = "") => {
+    try {
+      const j = JSON.parse(txt);
+      if (Array.isArray(j)) return j;
+    } catch (_) {}
+    return txt.split("\n")
+      .map(l => l.trim())
+      .filter(Boolean)
+      .map(l => l.split(/[\s,;]+/).map(Number).filter(v => !isNaN(v)));
+  };
+
+  const buildPayload = () => ({
+    camera: ($("#in-camera")?.value || "").trim(),
+    url: ($("#in-url")?.value || "").trim(),
+    task: ($("#in-task")?.value || "").trim(),
+    modelo: ($("#in-modelo")?.value || "").trim(),
+    categories: parseList($("#in-categories")?.value || ""),
+    rois_names: parseList($("#in-rois-names")?.value || ""),
+    interval_value: Number($("#in-interval")?.value || 0),
+    rois: parseRois($("#in-rois")?.value || "")
+  });
+
+  const setMsg = (html, ok = false) => {
+    $("#msg").innerHTML = html;
+    $("#msg").style.color = ok ? "#11a23a" : "#e53935";
+  };
+
+  const showPayload = () => {
+    $("#payload").textContent = JSON.stringify(buildPayload(), null, 2);
+  };
+
+  // ===== Prefill robusto da variável ${Cameras} =====
+  try {
+    const resolveVar = (name) => {
+      const scoped = (typeof htmlGraphics !== "undefined" && htmlGraphics.scopedVars) ? htmlGraphics.scopedVars : {};
+      const candidates = [
+        `\${${name}:csv}`,
+        `\${${name}}`,
+        `$${name}`,
+      ];
+      for (const tpl of candidates) {
+        const out = getTemplateSrv().replace(tpl, scoped);
+        if (out && out !== tpl) return out;
+      }
+      // Fallback: lê var-<name> da URL (?var-Cameras=ACIC02&var-Cameras=ACIC03)
+      try {
+        const qs = new URLSearchParams(location.search);
+        const vals = qs.getAll(`var-${name}`);
+        if (vals && vals.length) return vals.join(",");
+      } catch (_) {}
+      return "";
+    };
+
+    const camVal = resolveVar("Cameras");
+    if (camVal && camVal !== "${Cameras}" && camVal !== "${Cameras:csv}" && !$("#in-camera").value) {
+      const first = camVal.split(",")[0].trim(); // use CSV completo se preferir
+      $("#in-camera").value = first || camVal;
+    }
+  } catch (_) {}
+
+  // Eventos
+  htmlNode.addEventListener("input", (ev) => {
+    if (ev.target.closest("#cam-form")) showPayload();
+  });
+
+  $("#btn-reset").addEventListener("click", () => {
+    ["#in-camera","#in-url","#in-task","#in-modelo","#in-interval","#in-categories","#in-rois-names","#in-rois"]
+      .forEach(sel => { const el = $(sel); if (el) el.value = ""; });
+    localStorage.removeItem("cam-form-data");
+    setMsg("");
+    showPayload();
+  });
+
+  $("#btn-send").addEventListener("click", async () => {
+    const btn = $("#btn-send");
+    const payload = buildPayload();
+
+    if (!payload.camera) return setMsg("Preencha <b>Camera</b>.");
+    if (!payload.url)    return setMsg("Preencha <b>URL</b>.");
+
+    btn.disabled = true; btn.textContent = "Enviando...";
+    setMsg("Enviando...", true);
+
+    try {
+      const res = await fetch(API_BASE + ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      const text = await res.text();
+      let body; try { body = JSON.parse(text); } catch { body = text; }
+
+      if (!res.ok) {
+        setMsg(`❌ Erro (${res.status}):<br><pre style="white-space:pre-wrap">${typeof body === "string" ? body : JSON.stringify(body, null, 2)}</pre>`);
+      } else {
+        setMsg(`✅ Sucesso:<br><pre style="white-space:pre-wrap">${typeof body === "string" ? body : JSON.stringify(body, null, 2)}</pre>`, true);
+        localStorage.setItem("cam-form-data", JSON.stringify(payload));
+      }
+    } catch (err) {
+      setMsg(`❌ Falha de rede/CORS:<br><pre>${String(err)}</pre>`);
+    } finally {
+      btn.disabled = false; btn.textContent = "Salvar";
+    }
+  });
+
+  // Init: restaurar último payload
+  try {
+    const raw = localStorage.getItem("cam-form-data");
+    if (raw) {
+      const d = JSON.parse(raw);
+      $("#in-camera").value = d.camera ?? "";
+      $("#in-url").value = d.url ?? "";
+      $("#in-task").value = d.task ?? "";
+      $("#in-modelo").value = d.modelo ?? "";
+      $("#in-interval").value = d.interval_value ?? 0;
+      $("#in-categories").value = (d.categories || []).join("\n");
+      $("#in-rois-names").value = (d.rois_names || []).join("\n");
+      $("#in-rois").value = JSON.stringify(d.rois || []);
+    }
+  } catch (_) {}
+
+  showPayload();
+}
