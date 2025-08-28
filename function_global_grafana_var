@@ -1,0 +1,19 @@
+function setGrafanaVar(nome, valor, { reload = false } = {}) {
+  const url  = new URL(location.href);
+  const keyH = var-${nome}; // forma correta no Grafana
+
+  // Apaga qualquer resquício anterior
+  url.searchParams.delete(keyH);
+
+
+  // Seta valor (suporta multi-valor)
+  if (Array.isArray(valor)) {
+    for (const v of valor) url.searchParams.append(keyH, v);
+  } else if (valor != null && valor !== "") {
+    url.searchParams.set(keyH, String(valor));
+  }
+
+  const finalUrl = url.toString();
+  if (reload) location.href = finalUrl;         // recarrega o dashboard (outros painéis reagem)
+  else history.replaceState({}, "", finalUrl);  // muda a URL sem reload
+}
